@@ -16,6 +16,8 @@ from commands import (
     SettingsRequested,
 )
 
+__version__="v0.0.4-beta"
+
 
 class LauncherWindow(ctk.CTk):
     def __init__(self, config, theme, registry, on_exit=None,
@@ -99,7 +101,7 @@ class LauncherWindow(ctk.CTk):
 
         self.version_label = ctk.CTkLabel(
             footer,
-            text='v0.0.3-beta',
+            text=__version__,
             font=(theme['font_family'], theme['font_size'] - 3),
             text_color=theme['footer_fg'],
         )

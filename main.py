@@ -23,7 +23,7 @@ from theme import Theme, themes_dir
 from window import LauncherWindow
 from set_alias_dialog import SetAliasDialog
 
-__version__ = 'v0.0.3-beta'
+__version__ = 'v0.0.4-beta'
 
 
 class App:
