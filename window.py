@@ -8,18 +8,19 @@ import time
 import customtkinter as ctk
 
 from autocomplete import Autocomplete
-from commands import ExitRequested
+from commands import ExitRequested, SettingsRequested
 
-__version__ = 'v0.0.1-beta'
+__version__ = 'v0.0.3-beta'
 
 
 class LauncherWindow(ctk.CTk):
-    def __init__(self, config, theme, registry, on_exit=None):
+    def __init__(self, config, theme, registry, on_exit=None, on_settings=None):
         super().__init__()
         self.config = config
         self.theme = theme
         self.registry = registry
         self.on_exit = on_exit
+        self.on_settings = on_settings
 
         # ---------- окно ----------
         w = config.window
@@ -45,13 +46,14 @@ class LauncherWindow(ctk.CTk):
         input_row.pack(fill='x', padx=10, pady=(10, 6))
         input_row.pack_propagate(False)
 
-        ctk.CTkLabel(
+        self.prompt_label = ctk.CTkLabel(
             input_row,
             text='›',
             font=(theme['font_family'], theme['font_size'] + 6),
             text_color=theme['accent'],
             width=16,
-        ).pack(side='left', padx=(2, 6))
+        )
+        self.prompt_label.pack(side='left', padx=(2, 6))
 
         self.input = ctk.CTkEntry(
             input_row,
@@ -92,12 +94,13 @@ class LauncherWindow(ctk.CTk):
         )
         self.hints.pack(side='left')
 
-        ctk.CTkLabel(
+        self.version_label = ctk.CTkLabel(
             footer,
             text=__version__,
             font=(theme['font_family'], theme['font_size'] - 3),
             text_color=theme['footer_fg'],
-        ).pack(side='right')
+        )
+        self.version_label.pack(side='right')
 
         # ---------- автодополнение ----------
         self.autocomplete = Autocomplete(
@@ -154,6 +157,10 @@ class LauncherWindow(ctk.CTk):
             result = self.registry.execute(text)
             if result:
                 self._append(result)
+        except SettingsRequested:
+            if self.on_settings:
+                self.on_settings()
+            return
         except ExitRequested:
             if self.on_exit:
                 self.on_exit()
@@ -253,6 +260,8 @@ class LauncherWindow(ctk.CTk):
         )
         self.output.tag_config('error', foreground=new_theme['list_error'])
         self.hints.configure(text_color=new_theme['footer_fg'])
+        self.prompt_label.configure(text_color=new_theme['accent'])
+        self.version_label.configure(text_color=new_theme['footer_fg'])
         self.autocomplete.theme = new_theme
         if self.autocomplete.active:
             self.autocomplete._show(self.autocomplete.items)

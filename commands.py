@@ -29,6 +29,9 @@ class CommandError(Exception):
 class ExitRequested(Exception):
     """Сигнал: пользователь запросил выход. Ловится в window.py."""
     pass
+class SettingsRequested(Exception):
+    """Сигнал: открыть окно настроек. Ловится в window.py."""
+    pass
 
 
 class CommandRegistry:
@@ -195,6 +198,8 @@ class CommandRegistry:
     # ---------- /exit ----------
     def cmd_exit(self, args, force):
         raise ExitRequested()
+    def cmd_settings(self, args, force):
+        raise SettingsRequested()
 
     # ---------- helpers ----------
     @staticmethod

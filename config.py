@@ -20,8 +20,9 @@ DEFAULT_CONFIG = {
         'openlist': 'openlist',
         'opendel':  'opendel',
         'calc':     'calc',
-        'help':     'help',      # ← новые
-        'exit':     'exit',      # ←
+        'help':     'help',
+        'exit':     'exit',
+        'settings': 'settings',
     },
     # Зарегистрированные алиасы: {alias: path}
     'shortcuts': {},

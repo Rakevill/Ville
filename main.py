@@ -1,14 +1,4 @@
-"""Точка входа: глобальный хоткей, трей, главное окно.
-
-Потоки:
-- Главный       — Tk mainloop (всё, что касается виджетов)
-- keyboard      — свой поток, вызывает _toggle_from_other_thread
-- pystray       — свой поток, вызывает _toggle_from_other_thread / _request_shutdown
-
-Из чужих потоков напрямую к виджетам НЕ обращаемся — только через
-window.after(0, ...), иначе Tkinter падает или ведёт себя непредсказуемо.
-"""
-import os
+"""Точка входа: IPC, трей, хоткей, окно."""
 import sys
 import threading
 
@@ -18,19 +8,16 @@ from PIL import Image, ImageDraw
 
 from commands import CommandRegistry
 from config import Config
+from instance import (
+    acquire_single_instance,
+    start_ipc_server,
+    try_activate_existing,
+)
 from theme import Theme, themes_dir
 from window import LauncherWindow
-from instance import acquire_single_instance
+from settings import SettingsWindow
 
-def main():
-    if not acquire_single_instance():
-        # уже запущен — тихо выходим
-        sys.exit(0)
-    app = App()
-    try:
-        app.run()
-    except KeyboardInterrupt:
-        app.shutdown()
+__version__ = 'v0.0.3-beta'
 
 
 class App:
@@ -41,132 +28,141 @@ class App:
         self.window = LauncherWindow(
             self.config, self.theme, self.registry,
             on_exit=self.shutdown,
+            on_settings=self._show_settings,
         )
         self.tray = None
-        self._hotkey_handle = None
+        self._settings_window = None
 
-    # ---------- показ / скрытие ----------
     def toggle(self):
-        """Только из главного Tk-потока."""
         if self.window.winfo_viewable():
             self.window.withdraw()
         else:
-            self.window.deiconify()
-            self.window.lift()
-            self.window.focus_input()
-            if self.config.window.get('always_on_top', True):
-                self.window.attributes('-topmost', True)
+            self.show_window()
+
+    def show_window(self):
+        self.window.deiconify()
+        self.window.lift()
+        self.window.focus_input()
+        if self.config.window.get('always_on_top', True):
+            self.window.attributes('-topmost', True)
 
     def _toggle_from_other_thread(self):
-        """Безопасный вызов toggle из keyboard/pystray."""
         try:
             self.window.after(0, self.toggle)
         except Exception:
-            # окно уже уничтожено — тихо игнорируем
             pass
 
-    # ---------- хоткей ----------
+    def _show_from_other_thread(self):
+        try:
+            self.window.after(0, self.show_window)
+        except Exception:
+            pass
+
     def _setup_hotkey(self):
         combo = self.config.hotkey
         try:
-            self._hotkey_handle = keyboard.add_hotkey(
-                combo,
-                self._toggle_from_other_thread,
-                suppress=False,
-            )
+            keyboard.add_hotkey(combo, self._toggle_from_other_thread, suppress=False)
         except Exception as e:
             print(f'[hotkey] Не удалось зарегистрировать "{combo}": {e}')
-            print('[hotkey] Комбинация занята? Поменяйте в config.yaml. '
-                  'Пока доступ только через трей.')
 
-    # ---------- трей ----------
     def _tray_image(self):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        d.rounded_rectangle(
-            [6, 6, 58, 58], radius=12,
-            fill=self.theme['window_bg'],
-            outline=self.theme['accent'],
-            width=3,
-        )
-        # точка в центре — простая и читаемая, без шрифтов
+        d.rounded_rectangle([6, 6, 58, 58], radius=12,
+                            fill=self.theme['window_bg'],
+                            outline=self.theme['accent'], width=3)
         d.ellipse([27, 27, 37, 37], fill=self.theme['accent'])
         return img
 
     def _setup_tray(self):
         menu = pystray.Menu(
-            pystray.MenuItem(
-                'Показать',
-                lambda *_: self._toggle_from_other_thread(),
-                default=True,
-            ),
+            pystray.MenuItem('Показать', lambda *_: self._toggle_from_other_thread(), default=True),
+            pystray.MenuItem('Настройки…', self._open_settings),
             pystray.MenuItem('Открыть конфиг', self._open_config),
             pystray.MenuItem('Открыть папку тем', self._open_themes),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Выход', self._request_shutdown),
         )
-        self.tray = pystray.Icon(
-            'launcher', self._tray_image(), 'Launcher', menu,
-        )
-        threading.Thread(
-            target=self.tray.run, daemon=True, name='tray',
-        ).start()
+        self.tray = pystray.Icon('launcher', self._tray_image(),
+                                 f'Ville {__version__}', menu)
+        threading.Thread(target=self.tray.run, daemon=True, name='tray').start()
 
     def _open_config(self, *_):
-        # сначала пробуем открыть сам файл в редакторе по умолчанию,
-        # если не получилось (нет ассоциации) — открываем папку
+        import os
         try:
             os.startfile(self.config.path)
         except OSError:
             os.startfile(self.config.path.parent)
 
     def _open_themes(self, *_):
+        import os
         os.startfile(themes_dir())
 
-    # ---------- жизненный цикл ----------
+    def _open_settings(self, *_):
+        self.window.after(0, self._show_settings)
+
+    def _show_settings(self):
+        if self._settings_window is not None:
+            try:
+                self._settings_window.focus_force()
+                return
+            except Exception:
+                self._settings_window = None
+        self._settings_window = SettingsWindow(
+            self.window, self.config, self.theme, self._apply_settings,
+        )
+        self._settings_window.protocol(
+            'WM_DELETE_WINDOW', self._on_settings_closed,
+        )
+
+    def _on_settings_closed(self):
+        if self._settings_window is not None:
+            try:
+                self._settings_window.destroy()
+            except Exception:
+                pass
+        self._settings_window = None
+
+    def _apply_settings(self, new_theme_data, new_verbs):
+        self.theme.data = new_theme_data
+        self.window.apply_theme(self.theme)
+
+        self.registry._verb_keys = {v: k for k, v in new_verbs.items()}
+
+        ac = self.window.autocomplete
+        ac._open_verbs = {v for k, v in new_verbs.items() if k == 'open'}
+        ac._openset_verbs = {v for k, v in new_verbs.items() if k == 'openset'}
+
     def _request_shutdown(self, *_):
-        """Из трея — в Tk-поток."""
         self.window.after(0, self.shutdown)
 
     def run(self):
-        # опционально стартовать скрытым (для автозапуска с Windows)
         if self.config.window.get('start_hidden', False):
             self.window.withdraw()
-
         try:
             self._setup_tray()
             self._setup_hotkey()
             self.window.mainloop()
         finally:
-            # сработает и при нормальном выходе,
-            # и при исключении внутри mainloop
             self._cleanup()
 
     def shutdown(self):
-        # разрушение окна завершает mainloop → finally → _cleanup
         try:
             self.window.destroy()
         except Exception:
             pass
 
     def _cleanup(self):
-        """Идемпотентно: можно вызывать сколько угодно раз."""
-        # снимаем все глобальные хоткеи
         try:
             keyboard.remove_all_hotkeys()
         except Exception:
             pass
-        self._hotkey_handle = None
-
-        # останавливаем трей-поток
         if self.tray is not None:
             try:
                 self.tray.stop()
             except Exception:
                 pass
             self.tray = None
-
-        # добиваем окно, если destroy не был вызван явно
         try:
             if self.window.winfo_exists():
                 self.window.destroy()
@@ -175,7 +171,13 @@ class App:
 
 
 def main():
+    if not acquire_single_instance():
+        try_activate_existing()
+        sys.exit(0)
+
     app = App()
+    start_ipc_server(app._show_from_other_thread)
+
     try:
         app.run()
     except KeyboardInterrupt:
