@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
         'help':     'help',
         'exit':     'exit',
         'settings': 'settings',
+        'clear': 'clear',
+        'restart': 'restart',
     },
     # Зарегистрированные алиасы: {alias: path}
     'shortcuts': {},

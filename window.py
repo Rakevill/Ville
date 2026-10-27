@@ -1,28 +1,35 @@
 """Главное окно лаунчера.
 
 Без системной рамки, перетаскивается за любое место,
-скрывается по Escape и по потере фокуса, хранит позицию в конфиге.
+скрывается по Escape и (опционально) по потере фокуса.
 """
+import ctypes
 import time
 
 import customtkinter as ctk
 
 from autocomplete import Autocomplete
-from commands import ExitRequested, SettingsRequested
-
-__version__ = 'v0.0.3-beta'
+from commands import (
+    ClearRequested,
+    ExitRequested,
+    RestartRequested,
+    SettingsRequested,
+)
 
 
 class LauncherWindow(ctk.CTk):
-    def __init__(self, config, theme, registry, on_exit=None, on_settings=None):
+    def __init__(self, config, theme, registry, on_exit=None,
+                 on_settings=None, on_restart=None,
+                 is_extra_foreground=None):
         super().__init__()
         self.config = config
         self.theme = theme
         self.registry = registry
         self.on_exit = on_exit
         self.on_settings = on_settings
+        self.on_restart = on_restart
+        self._is_extra_foreground = is_extra_foreground or (lambda: False)
 
-        # ---------- окно ----------
         w = config.window
         x, y = self._validate_position(w['x'], w['y'])
         self.geometry(f'{w["width"]}x{w["height"]}+{x}+{y}')
@@ -30,8 +37,8 @@ class LauncherWindow(ctk.CTk):
         self.attributes('-topmost', bool(w['always_on_top']))
         self.configure(fg_color=theme['window_bg'])
         self._opened_at = time.monotonic()
+        self._focus_received = False
 
-        # ---------- фрейм-подложка ----------
         self.frame = ctk.CTkFrame(
             self,
             fg_color=theme['window_bg'],
@@ -41,7 +48,6 @@ class LauncherWindow(ctk.CTk):
         )
         self.frame.pack(fill='both', expand=True, padx=1, pady=1)
 
-        # ---------- строка ввода с промптом ----------
         input_row = ctk.CTkFrame(self.frame, fg_color='transparent', height=40)
         input_row.pack(fill='x', padx=10, pady=(10, 6))
         input_row.pack_propagate(False)
@@ -66,10 +72,8 @@ class LauncherWindow(ctk.CTk):
             height=40,
         )
         self.input.pack(side='left', fill='x', expand=True)
-        self.input.bind('<Return>', self._on_enter)
         self.input.bind('<Escape>', lambda e: self.withdraw())
 
-        # ---------- поле вывода ----------
         self.output = ctk.CTkTextbox(
             self.frame,
             fg_color=theme['list_bg'],
@@ -81,7 +85,6 @@ class LauncherWindow(ctk.CTk):
         self.output.pack(fill='both', expand=True, padx=10, pady=(0, 6))
         self.output.tag_config('error', foreground=theme['list_error'])
 
-        # ---------- футер ----------
         footer = ctk.CTkFrame(self.frame, fg_color='transparent', height=20)
         footer.pack(fill='x', padx=10, pady=(0, 8))
 
@@ -96,13 +99,12 @@ class LauncherWindow(ctk.CTk):
 
         self.version_label = ctk.CTkLabel(
             footer,
-            text=__version__,
+            text='v0.0.3-beta',
             font=(theme['font_family'], theme['font_size'] - 3),
             text_color=theme['footer_fg'],
         )
         self.version_label.pack(side='right')
 
-        # ---------- автодополнение ----------
         self.autocomplete = Autocomplete(
             parent=self.frame,
             entry=self.input,
@@ -113,27 +115,32 @@ class LauncherWindow(ctk.CTk):
             on_state_change=self._update_footer_hint,
         )
 
-        # ---------- история ----------
+        self.input.bind('<Return>', self._on_enter, add='+')
+
         self.history = list(self.config.data.get('history', []))
         self.history_idx = len(self.history)
         self.history_draft = ''
         self.input.bind('<Up>',   self._on_history_up,   add='+')
         self.input.bind('<Down>', self._on_history_down, add='+')
 
-        # ---------- перетаскивание ----------
         self._dx = self._dy = 0
-        for widget in (self.frame, input_row, self.output):
+        for widget in (self.frame, input_row):
             widget.bind('<Button-1>', self._drag_start)
             widget.bind('<B1-Motion>', self._drag_move)
 
-        # ---------- потеря фокуса ----------
-        self.bind('<FocusOut>', self._on_blur)
+        self.bind('<Escape>', self._on_escape_key)
 
         self.focus_input()
+        self._check_focus()
 
     # ========== показ / фокус ==========
     def focus_input(self):
         self._opened_at = time.monotonic()
+        self._focus_received = False
+        try:
+            self.focus_force()
+        except Exception:
+            pass
         self.input.focus_set()
         self.input.select_range(0, 'end')
 
@@ -143,6 +150,58 @@ class LauncherWindow(ctk.CTk):
         else:
             text = '↑↓ история  ·  Tab доп.  ·  Enter вып.  ·  Esc скрыть'
         self.hints.configure(text=text)
+
+    # ========== Escape ==========
+    def _on_escape_key(self, _):
+        if self.autocomplete.active:
+            return
+        self._save_position_and_hide()
+
+    # ========== autohide через опрос foreground ==========
+    def _is_foreground(self) -> bool:
+        try:
+            hwnd = ctypes.windll.user32.GetAncestor(self.winfo_id(), 2)
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if hwnd == fg:
+                return True
+            if self._is_extra_foreground():
+                return True
+            return False
+        except Exception:
+            return True
+
+    def _save_position_and_hide(self):
+        try:
+            self.config.data['window']['x'] = self.winfo_x()
+            self.config.data['window']['y'] = self.winfo_y()
+            self.config.save()
+        except Exception:
+            pass
+        self.withdraw()
+
+    def _check_focus(self):
+        try:
+            if not self.winfo_exists():
+                return
+
+            if not self.winfo_viewable():
+                self.after(300, self._check_focus)
+                return
+
+            if self._is_foreground():
+                self._focus_received = True
+            elif (self._focus_received
+                    and self.config.window.get('autohide_on_blur', True)
+                    and time.monotonic() - self._opened_at > 0.3):
+                self._save_position_and_hide()
+
+        except Exception:
+            return
+
+        try:
+            self.after(300, self._check_focus)
+        except Exception:
+            pass
 
     # ========== выполнение ==========
     def _on_enter(self, _=None):
@@ -157,6 +216,13 @@ class LauncherWindow(ctk.CTk):
             result = self.registry.execute(text)
             if result:
                 self._append(result)
+        except ClearRequested:
+            self.output.delete('1.0', 'end')
+            return
+        except RestartRequested:
+            if self.on_restart:
+                self.on_restart()
+            return
         except SettingsRequested:
             if self.on_settings:
                 self.on_settings()
@@ -223,24 +289,6 @@ class LauncherWindow(ctk.CTk):
         x = self.winfo_x() + (e.x - self._dx)
         y = self.winfo_y() + (e.y - self._dy)
         self.geometry(f'+{x}+{y}')
-
-    # ========== скрытие по потере фокуса ==========
-    def _on_blur(self, _):
-        if not self.config.window.get('autohide_on_blur', True):
-            return
-        self.after(150, self._maybe_hide)
-
-    def _maybe_hide(self):
-        if not self.winfo_viewable():
-            return
-        if time.monotonic() - self._opened_at < 0.5:
-            return
-        if self.focus_get() is not None:
-            return
-        self.config.data['window']['x'] = self.winfo_x()
-        self.config.data['window']['y'] = self.winfo_y()
-        self.config.save()
-        self.withdraw()
 
     # ========== тема ==========
     def apply_theme(self, new_theme):

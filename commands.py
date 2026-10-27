@@ -32,6 +32,12 @@ class ExitRequested(Exception):
 class SettingsRequested(Exception):
     """Сигнал: открыть окно настроек. Ловится в window.py."""
     pass
+class ClearRequested(Exception):
+    """Сигнал: очистить вывод. Ловится в window.py."""
+    pass
+class RestartRequested(Exception):
+    """Сигнал: перезапустить приложение."""
+    pass
 
 
 class CommandRegistry:
@@ -181,6 +187,8 @@ class CommandRegistry:
             'calc':     'вычислить (ans, sqrt, pi, ...)',
             'help':     'эта справка',
             'exit':     'закрыть приложение',
+            'clear':    'очистить вывод',
+            'restart': 'перезапустить приложение',
         }
         lines = ['Доступные команды:', '']
         for key, user_name in self.config.verbs.items():
@@ -205,6 +213,10 @@ class CommandRegistry:
         raise ExitRequested()
     def cmd_settings(self, args, force):
         raise SettingsRequested()
+    def cmd_clear(self, args, force):
+        raise ClearRequested()
+    def cmd_restart(self, args, force):
+        raise RestartRequested()
 
     # ---------- helpers ----------
     @staticmethod

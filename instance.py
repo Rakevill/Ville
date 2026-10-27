@@ -36,22 +36,21 @@ def acquire_single_instance(name='VilleLauncherMutex') -> bool:
     return True
 
 
-def try_activate_existing(timeout=1.5) -> bool:
-    """Послать 'show' уже запущенному экземпляру. True — успешно."""
+def try_activate_existing(payload='show', timeout=1.5) -> bool:
+    """Послать строку уже запущенному экземпляру. True — успешно."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             with socket.create_connection(('127.0.0.1', IPC_PORT), timeout=0.3) as s:
-                s.sendall(b'show\n')
+                s.sendall(payload.encode('utf-8') + b'\n')
                 return True
         except (ConnectionRefusedError, socket.timeout, OSError):
             time.sleep(0.1)
     return False
 
 
-def start_ipc_server(on_show) -> threading.Thread:
-    """Сервер, который дёргает on_show() при сигнале 'show'.
-    Работает в фоновом потоке, умирает вместе с процессом."""
+def start_ipc_server(on_message) -> threading.Thread:
+    """on_message(payload: str) — вызывается с содержимым сообщения."""
     def serve():
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -64,12 +63,20 @@ def start_ipc_server(on_show) -> threading.Thread:
             try:
                 conn, _ = server.accept()
                 with conn:
-                    data = conn.recv(100)
-                    if b'show' in data:
-                        on_show()
+                    data = conn.recv(8192).decode('utf-8', errors='ignore').strip()
+                    if data:
+                        on_message(data)
             except Exception:
                 pass
 
     t = threading.Thread(target=serve, daemon=True, name='ipc')
     t.start()
     return t
+
+def release_single_instance():
+    """Освободить мьютекс. Нужно перед перезапуском приложения,
+    иначе новый процесс увидит, что экземпляр уже работает."""
+    global _MUTEX_HANDLE
+    if _MUTEX_HANDLE:
+        _kernel32.CloseHandle(_MUTEX_HANDLE)
+        _MUTEX_HANDLE = None

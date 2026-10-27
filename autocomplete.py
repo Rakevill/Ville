@@ -20,7 +20,7 @@ import re
 import customtkinter as ctk
 
 
-MAX_ITEMS = 8
+MAX_ITEMS = 12 # Максимальное число глаголов (подсказок)
 
 
 class Autocomplete:
@@ -221,12 +221,26 @@ class Autocomplete:
             return 'break'
         if self.mode == 'verb':
             if self.user_navigated and self.items:
-                self._complete()
+                # пользователь явно выбрал — подставить и выполнить
+                raw = self.entry.get()
+                slash = '/' if raw.startswith('/') else ''
+                self._set_input(f'{slash}{self.items[self.selected]}')
+                self._hide()
+                self.execute_cb()
                 return 'break'
-            self._hide()
-            return
-        # alias
-        if self.user_navigated and self.items:
+            if len(self.items) == 1:
+                # единственное — тоже выполнить
+                raw = self.entry.get()
+                slash = '/' if raw.startswith('/') else ''
+                self._set_input(f'{slash}{self.items[0]}')
+                self._hide()
+                self.execute_cb()
+                return 'break'
+            # несколько без навигации — как Tab
+            self._complete()
+            return 'break'
+        # alias: выполнить, если навигация была ИЛИ совпадение единственное
+        if self.items and (self.user_navigated or len(self.items) == 1):
             self._complete()
             self._hide()
             self.execute_cb()
