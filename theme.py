@@ -23,6 +23,10 @@ from pathlib import Path
 DEFAULT_THEME = {
     'name': 'Default',
 
+    'footer_fg':     '#6c7086',   # приглушённый текст подсказок
+    'list_hover':    '#313244',   # фон пункта подсказки при наведении
+    'font_mono':     'Consolas',  # моноширинный для вывода
+
     # Окно
     'window_bg': '#1e1e2e',
     'window_border': '#45475a',

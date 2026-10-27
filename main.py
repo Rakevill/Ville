@@ -20,6 +20,17 @@ from commands import CommandRegistry
 from config import Config
 from theme import Theme, themes_dir
 from window import LauncherWindow
+from instance import acquire_single_instance
+
+def main():
+    if not acquire_single_instance():
+        # уже запущен — тихо выходим
+        sys.exit(0)
+    app = App()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        app.shutdown()
 
 
 class App:
@@ -27,7 +38,10 @@ class App:
         self.config = Config.load()
         self.theme = Theme.load(self.config.theme)
         self.registry = CommandRegistry(self.config)
-        self.window = LauncherWindow(self.config, self.theme, self.registry)
+        self.window = LauncherWindow(
+            self.config, self.theme, self.registry,
+            on_exit=self.shutdown,
+        )
         self.tray = None
         self._hotkey_handle = None
 

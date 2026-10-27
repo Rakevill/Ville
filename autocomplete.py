@@ -9,6 +9,10 @@
 Возвращает 'break' из обработчиков ↑/↓/Tab/Esc/Enter, когда подсказка
 активна, чтобы приоритет был у автодополнения, а не у истории команд
 в window.py. Порядок привязок важен: autocomplete биндится ДО истории.
+
+Команды принимаются и со слешем, и без него — если пользователь начал
+ввод без '/', подсказки всё равно работают, а подстановка сохраняет
+стиль пользователя (со слешем или без).
 """
 import os
 import re
@@ -16,16 +20,18 @@ import re
 import customtkinter as ctk
 
 
-MAX_ITEMS = 8  # больше — не влезает в окно, показываем «… ещё N»
+MAX_ITEMS = 8
 
 
 class Autocomplete:
-    def __init__(self, parent, entry, output, config, execute_cb, theme):
+    def __init__(self, parent, entry, output, config, execute_cb, theme,
+                 on_state_change=None):
         self.entry = entry
         self.output = output
         self.config = config
         self.execute_cb = execute_cb
         self.theme = theme
+        self.on_state_change = on_state_change
 
         # Ищем по ВНУТРЕННИМ ключам (open, openset), а не по именам,
         # которые видит пользователь: при /openset→fset переименовании
@@ -39,9 +45,9 @@ class Autocomplete:
             corner_radius=theme['corner_radius'],
             border_width=0,
         )
-        self.labels = []          # CTkLabel-ы видимых пунктов
-        self.items = []           # строки для отображения
-        self.path_items = []      # словари {name, path, is_dir} для режима path
+        self.labels = []
+        self.items = []
+        self.path_items = []
         self.selected = 0
         self.active = False
         self.user_navigated = False
@@ -57,10 +63,12 @@ class Autocomplete:
     # ============ маршрутизация ============
     def _update_suggestions(self):
         text = self.entry.get()
+        # Работаем с нормализованной строкой (со слешем),
+        # а _complete читает entry.get() — там оригинал, со стилем.
+        norm = text if text.startswith('/') else '/' + text if text else text
 
-        # 1) путь для /openset — приоритетно, потому что может содержать
-        #    пробелы внутри кавычек, а regex для verb/alias на это сломается
-        prefix = self._detect_path_prefix(text)
+        # 1) путь для /openset — приоритетно
+        prefix = self._detect_path_prefix(norm)
         if prefix is not None:
             entries = self._list_path(prefix)
             if entries:
@@ -68,15 +76,16 @@ class Autocomplete:
                 self.path_items = entries
                 self.user_navigated = False
                 self._show([
-                    e['name'] + (os.sep if e['is_dir'] else '')
+                    f"{'📁' if e['is_dir'] else '📄'} {e['name']}"
+                    + (os.sep if e['is_dir'] else '')
                     for e in entries
                 ])
             else:
                 self._hide()
             return
 
-        # 2) /verb без пробела — подсказка глагола
-        m = re.match(r'^/(\w*)$', text)
+        # 2) /verb без пробела
+        m = re.match(r'^/(\w*)$', norm)
         if m:
             partial = m.group(1).lower()
             verbs = sorted(set(self.config.verbs.values()))
@@ -89,8 +98,8 @@ class Autocomplete:
                 self._hide()
             return
 
-        # 3) /open <partial> — подсказка алиаса
-        m = re.match(r'^/(\w+)\s(.*)$', text)
+        # 3) /open <partial>
+        m = re.match(r'^/(\w+)\s(.*)$', norm)
         if m:
             verb, partial = m.group(1).lower(), m.group(2)
             if verb in self._open_verbs:
@@ -110,16 +119,7 @@ class Autocomplete:
     # ============ пути ============
     def _detect_path_prefix(self, text):
         """Вернуть путь-префикс, если курсор в незакрытой кавычке
-        первого аргумента openset-команды. None — не наш случай.
-
-        Примеры:
-          '/openset "'                → ''           (показать содержимое CWD)
-          '/openset "C:\\Te'          → 'C:\\Te'      (фильтр по Te)
-          '/openset "C:\\Users\\me"'  → None          (кавычка закрыта)
-          '/openset C:\\Temp'         → 'C:\\Temp'    (без кавычек, до пробела)
-          '/openset C:\\Program Files'→ None          (пробел без кавычек — увы)
-          '/open "'                   → None          (не openset-глагол)
-        """
+        первого аргумента openset-команды. text — со слешем."""
         m = re.match(r'^/(\w+)\s(.*)$', text)
         if not m:
             return None
@@ -127,20 +127,16 @@ class Autocomplete:
         if verb not in self._openset_verbs:
             return None
         if rest.startswith('"'):
-            # ровно одна кавычка = открытая
             return rest[1:] if rest.count('"') == 1 else None
         if rest and ' ' not in rest:
             return rest
         return None
 
     def _list_path(self, prefix):
-        """Содержимое каталога, отфильтрованное по последнему сегменту.
-        Папки выше файлов. Любые ошибки ОС → пустой список."""
         try:
             expanded = os.path.expandvars(prefix)
             if not expanded:
                 return []
-            # 'C:' → 'C:\' (корень диска)
             if re.match(r'^[A-Za-z]:$', expanded):
                 parent_dir, partial = expanded + os.sep, ''
             elif expanded.endswith((os.sep, '/')):
@@ -172,26 +168,21 @@ class Autocomplete:
         if not self.path_items:
             return
         item = self.path_items[self.selected]
-        m = re.match(r'^(/\w+)\s', self.entry.get())
+        m = re.match(r'^(/?)(\w+)\s', self.entry.get())
         if not m:
             return
-        verb_part = m.group(1)
+        slash, verb_part = m.group(1), m.group(2)
 
         if item['is_dir']:
-            # папка: открывающая кавычка остаётся, добавляем '\'
-            # и сразу показываем содержимое
-            self._set_input(f'{verb_part}"{item["path"]}{os.sep}')
+            self._set_input(f'{slash}{verb_part} "{item["path"]}{os.sep}')
             self._hide()
             self._update_suggestions()
         else:
-            # файл: закрываем кавычку, ставим пробел — можно писать алиас
-            self._set_input(f'{verb_part}"{item["path"]}" ')
+            self._set_input(f'{slash}{verb_part} "{item["path"]}" ')
             self._hide()
 
     # ============ клавиши ============
     def _on_key(self, event):
-        # Навигацию и модификаторы не считаем «вводом» —
-        # иначе user_navigated будет сбрасываться и список мигать
         if event.keysym in (
             'Up', 'Down', 'Tab', 'Escape', 'Return',
             'Shift_L', 'Shift_R', 'Control_L', 'Control_R',
@@ -202,7 +193,7 @@ class Autocomplete:
 
     def _on_down(self, _):
         if not self.active:
-            return                      # отдаём ↓ истории в window.py
+            return
         self.user_navigated = True
         self.selected = (self.selected + 1) % len(self.items)
         self._highlight()
@@ -225,29 +216,21 @@ class Autocomplete:
     def _on_enter(self, _):
         if not self.active:
             return
-
-        # path: Enter = Tab (подставить путь), но не выполнять команду —
-        # регистрация ещё не готова (нет алиаса)
         if self.mode == 'path':
             self._complete()
             return 'break'
-
-        # verb: команда не дописана, только дополнить
         if self.mode == 'verb':
             if self.user_navigated and self.items:
                 self._complete()
                 return 'break'
             self._hide()
             return
-
-        # alias: навигация + Enter = подставить и выполнить
+        # alias
         if self.user_navigated and self.items:
             self._complete()
             self._hide()
             self.execute_cb()
             return 'break'
-
-        # без навигации — обычное выполнение того, что в поле
         self._hide()
 
     def _on_escape(self, _):
@@ -260,10 +243,19 @@ class Autocomplete:
         self.user_navigated = True
         mode = self.mode
         self._complete()
-        # клик по алиасу — как Tab+Enter; по verb/path — только подстановка
         if mode == 'alias':
             self._hide()
             self.execute_cb()
+
+    def _on_hover(self, index):
+        if index == self.selected or index >= len(self.labels):
+            return
+        self.labels[index].configure(fg_color=self.theme['list_hover'])
+
+    def _on_unhover(self):
+        for i, lbl in enumerate(self.labels):
+            if i != self.selected:
+                lbl.configure(fg_color='transparent')
 
     # ============ завершение ============
     def _complete(self):
@@ -273,15 +265,19 @@ class Autocomplete:
             self._complete_path()
             return
         if self.mode == 'verb':
-            # '/openset ' — с пробелом, и сразу подсказка для openset
-            self._set_input(f'/{self.items[self.selected]} ')
+            raw = self.entry.get()
+            slash = '/' if raw.startswith('/') else ''
+            self._set_input(f'{slash}{self.items[self.selected]} ')
             self._hide()
             self._update_suggestions()
             return
         # alias
         chosen = self.items[self.selected]
-        m = re.match(r'^(/\w+)\s', self.entry.get())
-        self._set_input(f'{m.group(1)} {chosen}' if m else chosen)
+        m = re.match(r'^(/?)(\w+)\s', self.entry.get())
+        if m:
+            self._set_input(f'{m.group(1)}{m.group(2)} {chosen}')
+        else:
+            self._set_input(chosen)
 
     def _set_input(self, text):
         self.entry.delete(0, 'end')
@@ -293,16 +289,18 @@ class Autocomplete:
         self.items = items
         if self.selected >= len(items):
             self.selected = 0
-
         for lbl in self.labels:
             lbl.destroy()
         self.labels = []
 
         for i, name in enumerate(items[:MAX_ITEMS]):
-            prefix = '/' if self.mode == 'verb' else '  '
+            if self.mode == 'verb':
+                display = f'/{name}'
+            else:
+                display = f'  {name}'
             lbl = ctk.CTkLabel(
                 self.frame,
-                text=f'{prefix}{name}',
+                text=display,
                 anchor='w',
                 height=26,
                 font=(self.theme['font_family'],
@@ -313,6 +311,8 @@ class Autocomplete:
             )
             lbl.pack(fill='x', padx=4, pady=1)
             lbl.bind('<Button-1>', lambda e, idx=i: self._on_click(idx))
+            lbl.bind('<Enter>',    lambda e, idx=i: self._on_hover(idx))
+            lbl.bind('<Leave>',    lambda e: self._on_unhover())
             self.labels.append(lbl)
 
         if len(items) > MAX_ITEMS:
@@ -326,11 +326,12 @@ class Autocomplete:
             ).pack(fill='x', padx=4)
 
         if not self.active:
-            # вставляем перед полем вывода, чтобы не сдвигать поле ввода
             self.frame.pack(fill='x', padx=10, pady=(0, 4),
                             before=self.output)
             self.active = True
         self._highlight()
+        if self.on_state_change:
+            self.on_state_change()
 
     def _highlight(self):
         for i, lbl in enumerate(self.labels):
@@ -350,3 +351,5 @@ class Autocomplete:
         self.path_items = []
         self.user_navigated = False
         self.mode = None
+        if self.on_state_change:
+            self.on_state_change()

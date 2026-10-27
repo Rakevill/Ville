@@ -3,25 +3,32 @@
 Без системной рамки, перетаскивается за любое место,
 скрывается по Escape и по потере фокуса, хранит позицию в конфиге.
 """
+import time
+
 import customtkinter as ctk
 
 from autocomplete import Autocomplete
+from commands import ExitRequested
+
+__version__ = 'v0.0.1-beta'
 
 
 class LauncherWindow(ctk.CTk):
-    def __init__(self, config, theme, registry):
+    def __init__(self, config, theme, registry, on_exit=None):
         super().__init__()
         self.config = config
         self.theme = theme
         self.registry = registry
+        self.on_exit = on_exit
 
         # ---------- окно ----------
         w = config.window
         x, y = self._validate_position(w['x'], w['y'])
         self.geometry(f'{w["width"]}x{w["height"]}+{x}+{y}')
-        self.overrideredirect(True)                       # без рамки
+        self.overrideredirect(True)
         self.attributes('-topmost', bool(w['always_on_top']))
         self.configure(fg_color=theme['window_bg'])
+        self._opened_at = time.monotonic()
 
         # ---------- фрейм-подложка ----------
         self.frame = ctk.CTkFrame(
@@ -33,9 +40,21 @@ class LauncherWindow(ctk.CTk):
         )
         self.frame.pack(fill='both', expand=True, padx=1, pady=1)
 
-        # ---------- поле ввода ----------
+        # ---------- строка ввода с промптом ----------
+        input_row = ctk.CTkFrame(self.frame, fg_color='transparent', height=40)
+        input_row.pack(fill='x', padx=10, pady=(10, 6))
+        input_row.pack_propagate(False)
+
+        ctk.CTkLabel(
+            input_row,
+            text='›',
+            font=(theme['font_family'], theme['font_size'] + 6),
+            text_color=theme['accent'],
+            width=16,
+        ).pack(side='left', padx=(2, 6))
+
         self.input = ctk.CTkEntry(
-            self.frame,
+            input_row,
             placeholder_text='/openset "C:\\path" alias',
             fg_color=theme['input_bg'],
             text_color=theme['input_fg'],
@@ -44,7 +63,7 @@ class LauncherWindow(ctk.CTk):
             font=(theme['font_family'], theme['font_size']),
             height=40,
         )
-        self.input.pack(fill='x', padx=10, pady=(10, 6))
+        self.input.pack(side='left', fill='x', expand=True)
         self.input.bind('<Return>', self._on_enter)
         self.input.bind('<Escape>', lambda e: self.withdraw())
 
@@ -55,15 +74,32 @@ class LauncherWindow(ctk.CTk):
             text_color=theme['list_fg'],
             border_width=0,
             corner_radius=theme['corner_radius'],
-            font=(theme['font_family'], theme['font_size'] - 1),
+            font=(theme.get('font_mono', 'Consolas'), theme['font_size'] - 1),
         )
-        self.output.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        # заранее объявляем тег для красного текста ошибок
+        self.output.pack(fill='both', expand=True, padx=10, pady=(0, 6))
         self.output.tag_config('error', foreground=theme['list_error'])
 
+        # ---------- футер ----------
+        footer = ctk.CTkFrame(self.frame, fg_color='transparent', height=20)
+        footer.pack(fill='x', padx=10, pady=(0, 8))
+
+        self.hints = ctk.CTkLabel(
+            footer,
+            text='↑↓ история  ·  Tab доп.  ·  Enter вып.  ·  Esc скрыть',
+            font=(theme['font_family'], theme['font_size'] - 3),
+            text_color=theme['footer_fg'],
+            anchor='w',
+        )
+        self.hints.pack(side='left')
+
+        ctk.CTkLabel(
+            footer,
+            text=__version__,
+            font=(theme['font_family'], theme['font_size'] - 3),
+            text_color=theme['footer_fg'],
+        ).pack(side='right')
+
         # ---------- автодополнение ----------
-        # ВАЖНО: подключается ДО привязки ↑/↓ истории,
-        # чтобы Autocomplete имел приоритет и мог вернуть 'break'.
         self.autocomplete = Autocomplete(
             parent=self.frame,
             entry=self.input,
@@ -71,9 +107,10 @@ class LauncherWindow(ctk.CTk):
             config=config,
             execute_cb=self._execute_current,
             theme=theme,
+            on_state_change=self._update_footer_hint,
         )
 
-        # ---------- история команд ----------
+        # ---------- история ----------
         self.history = list(self.config.data.get('history', []))
         self.history_idx = len(self.history)
         self.history_draft = ''
@@ -82,28 +119,33 @@ class LauncherWindow(ctk.CTk):
 
         # ---------- перетаскивание ----------
         self._dx = self._dy = 0
-        for widget in (self.frame, self.input):
+        for widget in (self.frame, input_row, self.output):
             widget.bind('<Button-1>', self._drag_start)
             widget.bind('<B1-Motion>', self._drag_move)
 
-        # ---------- скрытие по потере фокуса ----------
+        # ---------- потеря фокуса ----------
         self.bind('<FocusOut>', self._on_blur)
 
         self.focus_input()
 
     # ========== показ / фокус ==========
     def focus_input(self):
-        """Вызывается из main.py при показе окна по хоткею."""
+        self._opened_at = time.monotonic()
         self.input.focus_set()
         self.input.select_range(0, 'end')
 
-    # ========== выполнение команды ==========
+    def _update_footer_hint(self):
+        if self.autocomplete.active:
+            text = '↑↓ выбор  ·  Tab вставить  ·  Enter выполнить  ·  Esc скрыть'
+        else:
+            text = '↑↓ история  ·  Tab доп.  ·  Enter вып.  ·  Esc скрыть'
+        self.hints.configure(text=text)
+
+    # ========== выполнение ==========
     def _on_enter(self, _=None):
-        # Autocomplete._on_enter может вернуть 'break' — тогда сюда не попадём.
         self._execute_current()
 
     def _execute_current(self):
-        """Общая точка входа — и из Enter, и из Autocomplete (клик/Enter)."""
         text = self.input.get().strip()
         if not text:
             return
@@ -112,9 +154,14 @@ class LauncherWindow(ctk.CTk):
             result = self.registry.execute(text)
             if result:
                 self._append(result)
+        except ExitRequested:
+            if self.on_exit:
+                self.on_exit()
+            else:
+                self.destroy()
+            return
         except Exception as e:
             self._append(f'Ошибка: {e}', error=True)
-        # очищаем поле и сбрасываем историю только при успехе/ошибке выполнения
         self.input.delete(0, 'end')
         self.history_idx = len(self.history)
         self.history_draft = ''
@@ -126,7 +173,7 @@ class LauncherWindow(ctk.CTk):
     # ========== история ==========
     def _add_history(self, text: str):
         if self.history and self.history[-1] == text:
-            return                                  # дедуп подряд
+            return
         self.history.append(text)
         if len(self.history) > 100:
             self.history = self.history[-100:]
@@ -134,7 +181,6 @@ class LauncherWindow(ctk.CTk):
         self.config.save()
 
     def _on_history_up(self, _):
-        # Autocomplete активен — он уже обработал и вернул 'break'
         if self.autocomplete.active:
             return
         if not self.history:
@@ -179,10 +225,11 @@ class LauncherWindow(ctk.CTk):
 
     def _maybe_hide(self):
         if not self.winfo_viewable():
-            return                                  # уже скрыто
+            return
+        if time.monotonic() - self._opened_at < 0.5:
+            return
         if self.focus_get() is not None:
-            return                                  # фокус вернулся
-        # сохраняем позицию
+            return
         self.config.data['window']['x'] = self.winfo_x()
         self.config.data['window']['y'] = self.winfo_y()
         self.config.save()
@@ -190,7 +237,6 @@ class LauncherWindow(ctk.CTk):
 
     # ========== тема ==========
     def apply_theme(self, new_theme):
-        """Переключить тему без перезапуска. Вызывать из трея/настроек."""
         self.theme = new_theme
         self.configure(fg_color=new_theme['window_bg'])
         self.frame.configure(
@@ -206,17 +252,13 @@ class LauncherWindow(ctk.CTk):
             text_color=new_theme['list_fg'],
         )
         self.output.tag_config('error', foreground=new_theme['list_error'])
-        # Autocomplete хранит theme и перерисовывает метки в _show
+        self.hints.configure(text_color=new_theme['footer_fg'])
         self.autocomplete.theme = new_theme
         if self.autocomplete.active:
             self.autocomplete._show(self.autocomplete.items)
 
     # ========== валидация позиции ==========
     def _validate_position(self, x: int, y: int):
-        """Если сохранённая позиция за пределами экрана (отключили
-        второй монитор) — вернуть дефолт. Простая проверка по
-        основному экрану; для мультимонитора в будущем — виртуальный
-        прямоугольник через Win32 GetSystemMetrics."""
         try:
             sw = self.winfo_screenwidth()
             sh = self.winfo_screenheight()

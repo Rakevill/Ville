@@ -26,6 +26,9 @@ ALIAS_RE = re.compile(r'^[A-Za-z0-9_\-]{1,32}$')
 class CommandError(Exception):
     """Ожидаемая ошибка выполнения команды — показывается пользователю."""
     pass
+class ExitRequested(Exception):
+    """Сигнал: пользователь запросил выход. Ловится в window.py."""
+    pass
 
 
 class CommandRegistry:
@@ -164,6 +167,34 @@ class CommandRegistry:
 
         self._last_ans = result
         return f'= {formatted}'
+
+    # ---------- /help ----------
+    def cmd_help(self, args, force):
+        descriptions = {
+            'openset':  'зарегистрировать путь под алиасом',
+            'open':     'открыть алиас или путь',
+            'openlist': 'список зарегистрированного',
+            'opendel':  'удалить алиас',
+            'calc':     'вычислить (ans, sqrt, pi, ...)',
+            'help':     'эта справка',
+            'exit':     'закрыть приложение',
+        }
+        lines = ['Доступные команды:', '']
+        for key, user_name in self.config.verbs.items():
+            desc = descriptions.get(key, '')
+            lines.append(f'  /{user_name:<10} {desc}')
+        lines += [
+            '',
+            'Примеры:',
+            '  /openset "C:\\Users\\me\\Documents" docs',
+            '  /open docs',
+            '  /calc sqrt(2)*pi',
+        ]
+        return '\n'.join(lines)
+
+    # ---------- /exit ----------
+    def cmd_exit(self, args, force):
+        raise ExitRequested()
 
     # ---------- helpers ----------
     @staticmethod
