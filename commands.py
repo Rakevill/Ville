@@ -193,6 +193,11 @@ class CommandRegistry:
             '  /open docs',
             '  /calc sqrt(2)*pi',
         ]
+        lines += [
+            '',
+            'Ville написан преимущественно с помощью AI-ассистента.',
+            'Подробнее: https://github.com/Rakevill/Ville#о-проекте',
+        ]
         return '\n'.join(lines)
 
     # ---------- /exit ----------

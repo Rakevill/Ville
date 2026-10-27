@@ -39,6 +39,20 @@ class App:
         else:
             self.show_window()
 
+
+    def _show_about(self, *_):
+        from tkinter import messagebox
+        self.window.after(0, lambda: messagebox.showinfo(
+            'О программе',
+            f'Ville {__version__}\n\n'
+            'Панель-лаунчер для Windows.\n\n'
+            'Код написан преимущественно с помощью AI-ассистента\n'
+            '(Claude, Anthropic) и отредактирован вручную.\n\n'
+            'Лицензия: MIT\n'
+            'https://github.com/Rakevill/Ville',
+            parent=self.window,
+        ))
+    
     def show_window(self):
         self.window.deiconify()
         self.window.lift()
@@ -76,6 +90,8 @@ class App:
 
     def _setup_tray(self):
         menu = pystray.Menu(
+            pystray.MenuItem('О программе', self._show_about),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem('Показать', lambda *_: self._toggle_from_other_thread(), default=True),
             pystray.MenuItem('Настройки…', self._open_settings),
             pystray.MenuItem('Открыть конфиг', self._open_config),
